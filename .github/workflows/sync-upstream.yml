@@ -1,0 +1,55 @@
+name: Sync Upstream to Dev
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # Daily at 04:00 UTC
+  workflow_dispatch:      # Manual trigger
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev branch
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Sync upstream and manage PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 1. Fetch latest upstream commits from GitLab
+          git remote add upstream https://gitlab.com/bloodyhealth/drip.git || git remote set-url upstream https://gitlab.com/bloodyhealth/drip.git
+          git fetch upstream main
+
+          # 2. Check if dev already contains all commits from upstream/main
+          UNMERGED=$(git rev-list --count HEAD..upstream/main)
+          if [ "$UNMERGED" -eq 0 ]; then
+            echo "dev is up to date with upstream/main. Nothing to do."
+            exit 0
+          fi
+
+          echo "Found $UNMERGED new commit(s) upstream."
+
+          # 3. Point sync-upstream branch directly to upstream/main
+          git branch -f sync-upstream upstream/main
+          git push origin sync-upstream --force
+
+          # 4. Check if an open PR already exists
+          PR_URL=$(gh pr list --head sync-upstream --base dev --state open --json url --jq '.[0].url')
+
+          if [ -n "$PR_URL" ]; then
+            echo "Existing PR found ($PR_URL). Branch push automatically updated it."
+          else
+            echo "Creating a new PR to dev..."
+            gh pr create \
+              --base dev \
+              --head sync-upstream \
+              --title "chore: sync upstream changes" \
+              --body "Automated PR syncing **$UNMERGED** new commit(s) from upstream GitLab (\`bloodyhealth/drip:main\`)."
+          fi
